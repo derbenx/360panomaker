@@ -1,3 +1,6 @@
+// Version: 0.2.0
+// Remember to increment on major changes.
+
 // --- Basic Three.js Scene Setup ---
 let scene, camera, renderer, sphere, controls;
 
@@ -52,6 +55,8 @@ let currentAlignedFaceIndex = null;
 const ALIGNMENT_TIME_MS = 500;
 
 function checkAlignment() {
+    if (!sphere) return; // Do not run until the sphere is created
+
     raycaster.setFromCamera({ x: 0, y: 0 }, camera); // Ray from center of view
     const intersects = raycaster.intersectObject(sphere);
 
@@ -170,8 +175,8 @@ function createSpheres(video) {
     geometry.scale(-1, 1, 1);
 
     const sphereCanvas = document.createElement('canvas');
-    sphereCanvas.width = 4096;
-    sphereCanvas.height = 2048;
+    sphereCanvas.width = 8192;
+    sphereCanvas.height = 4096;
     const sphereContext = sphereCanvas.getContext('2d');
     sphereContext.fillStyle = 'rgba(40, 40, 40, 1)';
     sphereContext.fillRect(0, 0, sphereCanvas.width, sphereCanvas.height);

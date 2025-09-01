@@ -62,6 +62,14 @@
             border: none;
             border-radius: 5px;
         }
+        #version-display {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: white;
+            font-family: monospace;
+            opacity: 0.7;
+        }
     </style>
 </head>
 <body>
@@ -71,6 +79,7 @@
     <div id="container"></div>
     <div id="overlay">
         <button id="startButton">Start</button>
+        <div id="version-display">v0.2.0</div>
     </div>
     <div id="save-container" style="display: none;">
         <button id="saveButton">Save Photo</button>
