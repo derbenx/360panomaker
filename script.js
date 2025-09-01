@@ -1,284 +1,277 @@
-const video = document.getElementById('video');
-const canvas = document.getElementById('canvas');
-const captureButton = document.getElementById('capture');
-const stitchButton = document.getElementById('stitch');
-const context = canvas.getContext('2d');
+// --- Basic Three.js Scene Setup ---
+let scene, camera, renderer, sphere;
+const targets = [];
 
-// Constraints for the video stream
-const constraints = {
-    video: {
-        facingMode: 'environment', // Use the rear camera
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
-    }
-};
-
-// Access the camera
-async function startCamera() {
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        video.srcObject = stream;
-        video.play();
-    } catch (err) {
-        console.error("Error accessing the camera: ", err);
-        alert("Could not access the camera. Please make sure you have granted permission.");
-    }
-}
-
-let captures = []; // Array to store our captured image data and orientation
-
-// Capture a frame from the video stream
-captureButton.addEventListener('click', () => {
-    // Set canvas dimensions to match video
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    // Draw the current video frame onto the canvas
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-    // Get the image data from the canvas
-    const imageData = canvas.toDataURL('image/jpeg', 0.8); // Use JPEG for smaller file size
-
-    // Store the image data along with the current orientation
-    const captureData = {
-        image: imageData,
-        orientation: { ...currentOrientation } // Create a copy of the orientation object
-    };
-    captures.push(captureData);
-
-    console.log('Image captured and stored. Total captures:', captures.length);
-    console.log('Stored data:', captureData);
-
-    // Enable stitch button if we have enough images
-    if (captures.length >= 2) {
-        stitchButton.disabled = false;
-    }
-
-    // Provide visual feedback
+function init() {
+    // Container
     const container = document.getElementById('container');
-    container.style.borderColor = '#00ff00';
-    setTimeout(() => {
-        container.style.borderColor = '#333';
-    }, 500);
-});
 
-async function stitchImages() {
-    if (!cvReady) {
-        console.error('OpenCV.js is not ready.');
-        alert('OpenCV is not ready. Please wait a moment.');
-        return;
+    // Scene
+    scene = new THREE.Scene();
+
+    // Camera
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.z = 0.01; // Start inside the sphere
+
+    // Renderer
+    renderer = new THREE.WebGLRenderer();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    container.appendChild(renderer.domElement);
+
+    // Sphere (our 360 canvas)
+    const geometry = new THREE.SphereGeometry(500, 60, 40);
+    // Invert the geometry on the x-axis so we see the inside
+    geometry.scale(-1, 1, 1);
+
+    // Create a canvas texture for the sphere
+    const sphereCanvas = document.createElement('canvas');
+    sphereCanvas.width = 4096; // High resolution for the texture
+    sphereCanvas.height = 2048;
+    const sphereContext = sphereCanvas.getContext('2d');
+    sphereContext.fillStyle = 'rgba(40, 40, 40, 1)';
+    sphereContext.fillRect(0, 0, sphereCanvas.width, sphereCanvas.height);
+    const sphereTexture = new THREE.CanvasTexture(sphereCanvas);
+
+    const material = new THREE.MeshBasicMaterial({ map: sphereTexture });
+    sphere = new THREE.Mesh(geometry, material);
+    scene.add(sphere);
+
+    createTargetSlots();
+
+    // Handle window resizing
+    window.addEventListener('resize', onWindowResize, false);
+
+    animate();
+}
+
+function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+
+    // Smoothly update the camera's rotation
+    if (deviceOrientation) {
+        const euler = new THREE.Euler(
+            THREE.MathUtils.degToRad(deviceOrientation.beta),
+            THREE.MathUtils.degToRad(deviceOrientation.alpha),
+            -THREE.MathUtils.degToRad(deviceOrientation.gamma),
+            'YXZ' // This order is often recommended for device orientation
+        );
+        const quaternion = new THREE.Quaternion().setFromEuler(euler);
+        camera.quaternion.slerp(quaternion, 0.1); // slerp for smooth transition
     }
-    if (captures.length < 2) {
-        console.error('Not enough images to stitch.');
-        alert('You need at least two images to stitch.');
-        return;
-    }
 
-    console.log('Starting sequential stitching process...');
-    stitchButton.disabled = true;
+    renderer.render(scene, camera);
 
-    // --- Sort captures by orientation to ensure correct stitching order ---
-    let sortedCaptures = captures.filter(c => c.orientation && c.orientation.alpha !== null);
-    if (sortedCaptures.length < 2) {
-        alert("Not enough captures with orientation data to stitch.");
-        stitchButton.disabled = false;
-        stitchButton.textContent = 'Stitch Images';
-        return;
-    }
+    checkAlignment();
+}
 
-    sortedCaptures.sort((a, b) => a.orientation.alpha - b.orientation.alpha);
+// --- Alignment and Capture Logic ---
+let alignmentTimer = null;
+let currentAlignedTarget = null;
+const ALIGNMENT_TIME_MS = 500; // 0.5 seconds to lock on
 
-    let largestGap = 0;
-    let largestGapIndex = -1;
-    for (let i = 0; i < sortedCaptures.length - 1; i++) {
-        const gap = sortedCaptures[i+1].orientation.alpha - sortedCaptures[i].orientation.alpha;
-        if (gap > largestGap) {
-            largestGap = gap;
-            largestGapIndex = i;
+function checkAlignment() {
+    if (!targets.length) return;
+
+    const cameraDirection = new THREE.Vector3();
+    camera.getWorldDirection(cameraDirection);
+    let alignedTargetThisFrame = null;
+
+    // Find the first target we are aimed at
+    for (const target of targets) {
+        if (target.captured) continue;
+        const targetDirection = new THREE.Vector3().subVectors(target.position, camera.position).normalize();
+        const angle = cameraDirection.angleTo(targetDirection);
+        if (angle < 0.1) {
+            alignedTargetThisFrame = target;
+            break;
         }
     }
 
-    // Heuristic to detect wraparound: if a gap is > 180 degrees, it's the one.
-    if (largestGap > 180) {
-        const part1 = sortedCaptures.slice(0, largestGapIndex + 1);
-        const part2 = sortedCaptures.slice(largestGapIndex + 1);
-        sortedCaptures = part2.concat(part1);
-    }
-
-    console.log("Stitching order based on alpha:", sortedCaptures.map(c => c.orientation.alpha.toFixed(1)));
-    captures = sortedCaptures; // Use the sorted captures for the rest of the function
-
-    const loadImageToMat = (imageData) => {
-        return new Promise((resolve, reject) => {
-            const img = new Image();
-            img.onload = () => {
-                const canvas = document.createElement('canvas');
-                canvas.width = img.width;
-                canvas.height = img.height;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(img, 0, 0);
-                resolve(cv.imread(canvas));
-            };
-            img.onerror = reject;
-            img.src = imageData;
-        });
-    };
-
-    let panorama;
-    try {
-        panorama = await loadImageToMat(captures[0].image);
-
-        for (let i = 1; i < captures.length; i++) {
-            stitchButton.textContent = `Stitching ${i + 1}/${captures.length}...`;
-            console.log(`Stitching image ${i + 1} of ${captures.length}...`);
-
-            const nextImageMat = await loadImageToMat(captures[i].image);
-
-            const orb = new cv.ORB();
-            const keypoints1 = new cv.KeyPointVector();
-            const keypoints2 = new cv.KeyPointVector();
-            const descriptors1 = new cv.Mat();
-            const descriptors2 = new cv.Mat();
-            const mask = new cv.Mat();
-            const bf = new cv.BFMatcher(cv.NORM_HAMMING, true);
-            const matches = new cv.DMatchVector();
-
-            orb.detectAndCompute(panorama, mask, keypoints1, descriptors1);
-            orb.detectAndCompute(nextImageMat, mask, keypoints2, descriptors2);
-
-            if (descriptors1.empty() || descriptors2.empty()) {
-                console.warn(`Could not find features in image ${i+1}. Skipping.`);
-                nextImageMat.delete(); keypoints1.delete(); keypoints2.delete(); descriptors1.delete(); descriptors2.delete(); mask.delete(); bf.delete(); matches.delete();
-                continue;
+    if (alignedTargetThisFrame) {
+        if (currentAlignedTarget !== alignedTargetThisFrame) {
+            // Aiming at a new target, reset timer and visual feedback
+            if (currentAlignedTarget) {
+                currentAlignedTarget.mesh.material.opacity = 0.5;
             }
+            clearTimeout(alignmentTimer);
+            currentAlignedTarget = alignedTargetThisFrame;
+            currentAlignedTarget.mesh.material.opacity = 1.0; // "selected" visual
 
-            bf.match(descriptors1, descriptors2, matches);
-
-            let good_matches = [];
-            for (let j = 0; j < matches.size(); ++j) good_matches.push(matches.get(j));
-            good_matches.sort((a, b) => a.distance - b.distance);
-            good_matches = good_matches.slice(0, Math.min(30, good_matches.length));
-
-            if (good_matches.length < 4) {
-                console.warn(`Not enough good matches for image ${i+1}. Skipping.`);
-                nextImageMat.delete(); keypoints1.delete(); keypoints2.delete(); descriptors1.delete(); descriptors2.delete(); mask.delete(); bf.delete(); matches.delete();
-                continue;
-            }
-
-            const points1 = [];
-            const points2 = [];
-            for (let j = 0; j < good_matches.length; j++) {
-                points1.push(keypoints1.get(good_matches[j].queryIdx).pt.x, keypoints1.get(good_matches[j].queryIdx).pt.y);
-                points2.push(keypoints2.get(good_matches[j].trainIdx).pt.x, keypoints2.get(good_matches[j].trainIdx).pt.y);
-            }
-
-            const mat_points1 = cv.matFromArray(points1.length / 2, 1, cv.CV_32FC2, points1);
-            const mat_points2 = cv.matFromArray(points2.length / 2, 1, cv.CV_32FC2, points2);
-            const homography = cv.findHomography(mat_points2, mat_points1, cv.RANSAC, 5.0);
-
-            if (homography.empty()) {
-                console.warn(`Could not compute homography for image ${i+1}. Skipping.`);
-                nextImageMat.delete(); keypoints1.delete(); keypoints2.delete(); descriptors1.delete(); descriptors2.delete(); mask.delete(); bf.delete(); matches.delete(); mat_points1.delete(); mat_points2.delete();
-                continue;
-            }
-
-            const warpedImage = new cv.Mat();
-            const dsize = new cv.Size(panorama.cols + nextImageMat.cols, Math.max(panorama.rows, nextImageMat.rows));
-            cv.warpPerspective(nextImageMat, warpedImage, homography, dsize);
-
-            const newPanorama = new cv.Mat(dsize.height, dsize.width, panorama.type(), new cv.Scalar(0, 0, 0, 255));
-            panorama.copyTo(newPanorama.colRange(0, panorama.cols).rowRange(0, panorama.rows));
-            cv.bitwise_or(newPanorama, warpedImage, newPanorama);
-
-            panorama.delete();
-            panorama = newPanorama;
-
-            nextImageMat.delete(); keypoints1.delete(); keypoints2.delete(); descriptors1.delete(); descriptors2.delete(); mask.delete(); bf.delete(); matches.delete(); mat_points1.delete(); mat_points2.delete(); homography.delete(); warpedImage.delete();
+            alignmentTimer = setTimeout(() => {
+                captureAndMapTexture(currentAlignedTarget);
+            }, ALIGNMENT_TIME_MS);
         }
-
-        console.log("Stitching complete. Displaying result.");
-        cv.imshow('canvas', panorama);
-        const panoramaDataUrl = canvas.toDataURL('image/jpeg');
-
-        canvas.style.display = 'none';
-        document.getElementById('container').style.display = 'none';
-        document.getElementById('capture').style.display = 'none';
-        document.getElementById('stitch').style.display = 'none';
-        document.getElementById('sensor-data').style.display = 'none';
-
-        const panoramaContainer = document.getElementById('panorama-container');
-        const viewer = new PANOLENS.Viewer({ container: panoramaContainer, autoRotate: true, autoRotateSpeed: 0.3 });
-        const imagePanorama = new PANOLENS.ImagePanorama(panoramaDataUrl);
-        viewer.add(imagePanorama);
-
-        panorama.delete();
-
-    } catch (error) {
-        console.error('An error occurred during stitching:', error);
-        alert('An error occurred during stitching. Check the console for details.');
-        if (panorama) panorama.delete();
-    } finally {
-        stitchButton.disabled = false;
-        stitchButton.textContent = 'Stitch Images';
+    } else {
+        // Not aiming at any target, reset everything
+        if (currentAlignedTarget) {
+            currentAlignedTarget.mesh.material.opacity = 0.5;
+        }
+        clearTimeout(alignmentTimer);
+        currentAlignedTarget = null;
     }
 }
 
-stitchButton.addEventListener('click', stitchImages);
+function captureAndMapTexture(target) {
+    if (target.captured) return; // Don't capture twice
+    console.log("Capturing for target at position:", target.position);
 
-// Start the camera when the page loads
-startCamera();
+    target.captured = true;
+    target.mesh.visible = false;
 
-// --- Device Orientation ---
+    const video = document.getElementById('camera-feed');
+    const tempCanvas = document.createElement('canvas');
+    // Use the video's intrinsic dimensions for the temp canvas
+    tempCanvas.width = video.videoWidth;
+    tempCanvas.height = video.videoHeight;
+    const tempCtx = tempCanvas.getContext('2d');
+    // Draw the current video frame to the temp canvas
+    tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
 
-const alphaSpan = document.getElementById('alpha');
-const betaSpan = document.getElementById('beta');
-const gammaSpan = document.getElementById('gamma');
+    // Get the main sphere's texture canvas
+    const sphereCanvas = sphere.material.map.image;
+    const sphereCtx = sphereCanvas.getContext('2d');
 
-let currentOrientation = {
-    alpha: null,
-    beta: null,
-    gamma: null
-};
+    // Convert the 3D target position to 2D UV coordinates
+    const normalizedPosition = target.position.clone().normalize();
+    const u = 0.5 + Math.atan2(normalizedPosition.z, normalizedPosition.x) / (2 * Math.PI);
+    const v = 0.5 - Math.asin(normalizedPosition.y) / Math.PI;
+
+    // Calculate destination on the texture canvas
+    const destX = u * sphereCanvas.width;
+    const destY = v * sphereCanvas.height;
+
+    // This is a simplified projection; a more advanced solution would
+    // warp the image. For now, we draw it as a rotated rectangle.
+    const drawWidth = 300; // The size of the patch on the texture
+    const drawHeight = 300;
+
+    sphereCtx.save();
+    sphereCtx.translate(destX, destY);
+    // We need to figure out the rotation to match the view
+    // This is complex. For now, we draw un-rotated.
+    sphereCtx.drawImage(tempCanvas, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+    sphereCtx.restore();
+
+    // Tell Three.js to update the texture
+    sphere.material.map.needsUpdate = true;
+
+    // Check for completion
+    const allCaptured = targets.every(t => t.captured);
+    if (allCaptured) {
+        onCompletion();
+    }
+}
+
+function onCompletion() {
+    console.log("All targets captured! Composition complete.");
+    document.getElementById('camera-container').style.display = 'none';
+    document.getElementById('save-container').style.display = 'flex';
+
+    const saveButton = document.getElementById('saveButton');
+    saveButton.addEventListener('click', saveImage);
+}
+
+function saveImage() {
+    const canvas = sphere.material.map.image;
+    const link = document.createElement('a');
+    link.download = 'panorama-360.png';
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+}
+
+function createTargetSlots() {
+    const numTargets = 8; // 8 targets around the equator
+    const radius = 490; // Slightly inside the sphere's radius of 500
+
+    const targetGeometry = new THREE.PlaneGeometry(30, 30);
+    // TODO: Use a texture for the target, like a camera icon
+    const targetMaterial = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.5
+    });
+
+    for (let i = 0; i < numTargets; i++) {
+        const angle = (i / numTargets) * Math.PI * 2; // Angle in radians
+
+        const x = radius * Math.cos(angle);
+        const z = radius * Math.sin(angle);
+        const y = 0;
+
+        const position = new THREE.Vector3(x, y, z);
+
+        const target = new THREE.Mesh(targetGeometry, targetMaterial);
+        target.position.copy(position);
+        target.lookAt(0, 0, 0);
+
+        const targetData = {
+            mesh: target,
+            position: position,
+            captured: false
+        };
+        targets.push(targetData);
+        scene.add(target);
+    }
+}
+
+// --- Device Orientation Logic ---
+let deviceOrientation = null;
 
 function handleOrientation(event) {
-    currentOrientation.alpha = event.alpha;
-    currentOrientation.beta = event.beta;
-    currentOrientation.gamma = event.gamma;
-
-    alphaSpan.textContent = event.alpha ? event.alpha.toFixed(2) : 'null';
-    betaSpan.textContent = event.beta ? event.beta.toFixed(2) : 'null';
-    gammaSpan.textContent = event.gamma ? event.gamma.toFixed(2) : 'null';
+    deviceOrientation = event;
 }
 
-// iOS 13+ requires user permission to access device orientation events.
-// We need to request permission on a user gesture, like a button click.
-function requestOrientationPermission() {
+// --- Camera Feed Logic ---
+async function startCamera() {
+    try {
+        const constraints = { video: { facingMode: 'environment' } };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        const videoElement = document.getElementById('camera-feed');
+        videoElement.srcObject = stream;
+        document.getElementById('camera-container').style.display = 'block';
+    } catch (err) {
+        console.error("Error accessing the camera: ", err);
+        alert("Could not access the camera. Please ensure you have granted permission.");
+    }
+}
+
+function startExperience() {
+    // First, request orientation permission
     if (typeof DeviceOrientationEvent.requestPermission === 'function') {
         DeviceOrientationEvent.requestPermission()
             .then(permissionState => {
                 if (permissionState === 'granted') {
-                    window.addEventListener('deviceorientation', handleOrientation);
+                    window.addEventListener('deviceorientation', handleOrientation, true);
+                    // If permission is granted, also start the camera
+                    startCamera();
                 } else {
                     alert('Permission for device orientation not granted.');
                 }
+                // Hide overlay after user interaction
+                document.getElementById('overlay').style.display = 'none';
             })
             .catch(console.error);
     } else {
         // Handle non-iOS 13+ devices
-        window.addEventListener('deviceorientation', handleOrientation);
+        window.addEventListener('deviceorientation', handleOrientation, true);
+        startCamera();
+        document.getElementById('overlay').style.display = 'none';
     }
 }
 
-// For simplicity, we'll tie the permission request to the capture button for now.
-// A better UX would be a dedicated "Enable Sensors" button.
-captureButton.addEventListener('click', requestOrientationPermission, { once: true });
-
-// --- OpenCV Integration ---
-
-let cvReady = false;
-
-function onOpenCvReady() {
-    console.log('OpenCV.js is ready.');
-    cvReady = true;
-    // You can add a visual indicator here if you want
-    document.getElementById('container').style.borderColor = '#4caf50'; // Green border
+function setupStartButton() {
+    const startButton = document.getElementById('startButton');
+    startButton.addEventListener('click', () => {
+        startExperience();
+    });
 }
+
+init();
+setupStartButton();
