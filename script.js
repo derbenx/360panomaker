@@ -1,6 +1,5 @@
 // --- Basic Three.js Scene Setup ---
 let scene, camera, renderer, sphere;
-const targets = [];
 
 function init() {
     // Container
@@ -36,7 +35,15 @@ function init() {
     sphere = new THREE.Mesh(geometry, material);
     scene.add(sphere);
 
-    createTargetSlots();
+    // Add a wireframe sphere to act as a visual guide
+    const wireframeMaterial = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.2
+    });
+    const wireframeSphere = new THREE.Mesh(geometry, wireframeMaterial);
+    scene.add(wireframeSphere);
 
     // Handle window resizing
     window.addEventListener('resize', onWindowResize, false);
@@ -71,99 +78,94 @@ function animate() {
 }
 
 // --- Alignment and Capture Logic ---
+const raycaster = new THREE.Raycaster();
+const capturedFaces = new Set();
 let alignmentTimer = null;
-let currentAlignedTarget = null;
-const ALIGNMENT_TIME_MS = 500; // 0.5 seconds to lock on
+let currentAlignedFaceIndex = null;
+const ALIGNMENT_TIME_MS = 500;
 
 function checkAlignment() {
-    if (!targets.length) return;
+    raycaster.setFromCamera({ x: 0, y: 0 }, camera); // Ray from center of view
+    const intersects = raycaster.intersectObject(sphere);
 
-    const cameraDirection = new THREE.Vector3();
-    camera.getWorldDirection(cameraDirection);
-    let alignedTargetThisFrame = null;
+    if (intersects.length > 0) {
+        const intersectedFace = intersects[0].face;
+        const faceIndex = intersectedFace.a; // Use the first vertex index as a unique ID for the face
 
-    // Find the first target we are aimed at
-    for (const target of targets) {
-        if (target.captured) continue;
-        const targetDirection = new THREE.Vector3().subVectors(target.position, camera.position).normalize();
-        const angle = cameraDirection.angleTo(targetDirection);
-        if (angle < 0.1) {
-            alignedTargetThisFrame = target;
-            break;
-        }
-    }
+        if (!capturedFaces.has(faceIndex)) {
+            // Aiming at a new, un-captured face
+            if (currentAlignedFaceIndex !== faceIndex) {
+                // Pointing at a new face, reset timer
+                clearTimeout(alignmentTimer);
+                currentAlignedFaceIndex = faceIndex;
 
-    if (alignedTargetThisFrame) {
-        if (currentAlignedTarget !== alignedTargetThisFrame) {
-            // Aiming at a new target, reset timer and visual feedback
-            if (currentAlignedTarget) {
-                currentAlignedTarget.mesh.material.opacity = 0.5;
+                alignmentTimer = setTimeout(() => {
+                    captureAndMapTexture(intersectedFace);
+                }, ALIGNMENT_TIME_MS);
             }
+            // Optional: Add visual feedback here for "locking on"
+        } else {
+            // Aiming at an already captured face, do nothing.
             clearTimeout(alignmentTimer);
-            currentAlignedTarget = alignedTargetThisFrame;
-            currentAlignedTarget.mesh.material.opacity = 1.0; // "selected" visual
-
-            alignmentTimer = setTimeout(() => {
-                captureAndMapTexture(currentAlignedTarget);
-            }, ALIGNMENT_TIME_MS);
+            currentAlignedFaceIndex = null;
         }
     } else {
-        // Not aiming at any target, reset everything
-        if (currentAlignedTarget) {
-            currentAlignedTarget.mesh.material.opacity = 0.5;
-        }
+        // Not aiming at anything, reset timer
         clearTimeout(alignmentTimer);
-        currentAlignedTarget = null;
+        currentAlignedFaceIndex = null;
     }
 }
 
-function captureAndMapTexture(target) {
-    if (target.captured) return; // Don't capture twice
-    console.log("Capturing for target at position:", target.position);
+function captureAndMapTexture(face) {
+    const faceIndex = face.a; // Use the first vertex index as a unique ID
+    if (capturedFaces.has(faceIndex)) return;
 
-    target.captured = true;
-    target.mesh.visible = false;
+    console.log("Capturing for face index:", faceIndex);
+    capturedFaces.add(faceIndex);
+
+    // Flash the camera border red for feedback
+    const cameraContainer = document.getElementById('camera-container');
+    cameraContainer.style.borderColor = 'red';
+    setTimeout(() => { cameraContainer.style.borderColor = 'white'; }, 200);
 
     const video = document.getElementById('camera-feed');
     const tempCanvas = document.createElement('canvas');
-    // Use the video's intrinsic dimensions for the temp canvas
     tempCanvas.width = video.videoWidth;
     tempCanvas.height = video.videoHeight;
     const tempCtx = tempCanvas.getContext('2d');
-    // Draw the current video frame to the temp canvas
     tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
 
-    // Get the main sphere's texture canvas
+    // Get texture canvas and geometry UVs
     const sphereCanvas = sphere.material.map.image;
     const sphereCtx = sphereCanvas.getContext('2d');
+    const uvAttribute = sphere.geometry.attributes.uv;
 
-    // Convert the 3D target position to 2D UV coordinates
-    const normalizedPosition = target.position.clone().normalize();
-    const u = 0.5 + Math.atan2(normalizedPosition.z, normalizedPosition.x) / (2 * Math.PI);
-    const v = 0.5 - Math.asin(normalizedPosition.y) / Math.PI;
+    // Get UVs for the face's vertices
+    const uvA = new THREE.Vector2().fromBufferAttribute(uvAttribute, face.a);
+    const uvB = new THREE.Vector2().fromBufferAttribute(uvAttribute, face.b);
+    const uvC = new THREE.Vector2().fromBufferAttribute(uvAttribute, face.c);
 
-    // Calculate destination on the texture canvas
-    const destX = u * sphereCanvas.width;
-    const destY = v * sphereCanvas.height;
+    // Calculate the centroid of the UV triangle
+    const centroidU = (uvA.x + uvB.x + uvC.x) / 3;
+    const centroidV = (uvA.y + uvB.y + uvC.y) / 3;
 
-    // This is a simplified projection; a more advanced solution would
-    // warp the image. For now, we draw it as a rotated rectangle.
-    const drawWidth = 300; // The size of the patch on the texture
-    const drawHeight = 300;
+    // Convert UV centroid to pixel coordinates on the canvas
+    const destX = centroidU * sphereCanvas.width;
+    const destY = (1 - centroidV) * sphereCanvas.height; // Y is inverted
+
+    // Simple approximation for the size of the patch to draw
+    const drawSize = 60;
 
     sphereCtx.save();
     sphereCtx.translate(destX, destY);
-    // We need to figure out the rotation to match the view
-    // This is complex. For now, we draw un-rotated.
-    sphereCtx.drawImage(tempCanvas, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+    sphereCtx.drawImage(tempCanvas, -drawSize / 2, -drawSize / 2, drawSize, drawSize);
     sphereCtx.restore();
 
-    // Tell Three.js to update the texture
     sphere.material.map.needsUpdate = true;
 
     // Check for completion
-    const allCaptured = targets.every(t => t.captured);
-    if (allCaptured) {
+    const totalFaces = sphere.geometry.index.count / 3;
+    if (capturedFaces.size >= totalFaces) {
         onCompletion();
     }
 }
@@ -183,42 +185,6 @@ function saveImage() {
     link.download = 'panorama-360.png';
     link.href = canvas.toDataURL('image/png');
     link.click();
-}
-
-function createTargetSlots() {
-    const numTargets = 8; // 8 targets around the equator
-    const radius = 490; // Slightly inside the sphere's radius of 500
-
-    const targetGeometry = new THREE.PlaneGeometry(30, 30);
-    // TODO: Use a texture for the target, like a camera icon
-    const targetMaterial = new THREE.MeshBasicMaterial({
-        color: 0xffffff,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.5
-    });
-
-    for (let i = 0; i < numTargets; i++) {
-        const angle = (i / numTargets) * Math.PI * 2; // Angle in radians
-
-        const x = radius * Math.cos(angle);
-        const z = radius * Math.sin(angle);
-        const y = 0;
-
-        const position = new THREE.Vector3(x, y, z);
-
-        const target = new THREE.Mesh(targetGeometry, targetMaterial);
-        target.position.copy(position);
-        target.lookAt(0, 0, 0);
-
-        const targetData = {
-            mesh: target,
-            position: position,
-            captured: false
-        };
-        targets.push(targetData);
-        scene.add(target);
-    }
 }
 
 // --- Device Orientation Logic ---
