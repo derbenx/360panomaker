@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>360 Photo Stitcher</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1>360 Photo Stitcher</h1>
+    <div id="container">
+        <video id="video" autoplay playsinline></video>
+        <canvas id="canvas"></canvas>
+    </div>
+    <button id="capture">Capture</button>
+    <button id="stitch" disabled>Stitch Images</button>
+    <div id="sensor-data">
+        <p>Orientation:</p>
+        Alpha: <span id="alpha">...</span>,
+        Beta: <span id="beta">...</span>,
+        Gamma: <span id="gamma">...</span>
+    </div>
+    <div id="panorama-container" style="width: 90vw; max-width: 1000px; height: 500px;"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/110/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/panolens@0.11.0/build/panolens.min.js"></script>
+    <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
+    <script src="script.js"></script>
+</body>
+</html>
