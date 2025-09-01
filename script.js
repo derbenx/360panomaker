@@ -1,5 +1,5 @@
 // --- Basic Three.js Scene Setup ---
-let scene, camera, renderer, sphere;
+let scene, camera, renderer, sphere, controls;
 
 function init() {
     // Container
@@ -17,36 +17,13 @@ function init() {
     renderer.setSize(window.innerWidth, window.innerHeight);
     container.appendChild(renderer.domElement);
 
-    // Sphere (our 360 canvas)
-    const geometry = new THREE.SphereGeometry(500, 60, 40);
-    // Invert the geometry on the x-axis so we see the inside
-    geometry.scale(-1, 1, 1);
-
-    // Create a canvas texture for the sphere
-    const sphereCanvas = document.createElement('canvas');
-    sphereCanvas.width = 4096; // High resolution for the texture
-    sphereCanvas.height = 2048;
-    const sphereContext = sphereCanvas.getContext('2d');
-    sphereContext.fillStyle = 'rgba(40, 40, 40, 1)';
-    sphereContext.fillRect(0, 0, sphereCanvas.width, sphereCanvas.height);
-    const sphereTexture = new THREE.CanvasTexture(sphereCanvas);
-
-    const material = new THREE.MeshBasicMaterial({ map: sphereTexture });
-    sphere = new THREE.Mesh(geometry, material);
-    scene.add(sphere);
-
-    // Add a wireframe sphere to act as a visual guide
-    const wireframeMaterial = new THREE.MeshBasicMaterial({
-        color: 0xffffff,
-        wireframe: true,
-        transparent: true,
-        opacity: 0.2
-    });
-    const wireframeSphere = new THREE.Mesh(geometry, wireframeMaterial);
-    scene.add(wireframeSphere);
+    // Sphere and wireframe will be created dynamically once camera starts
 
     // Handle window resizing
     window.addEventListener('resize', onWindowResize, false);
+
+    // Init controls
+    controls = new THREE.DeviceOrientationControls(camera);
 
     animate();
 }
@@ -60,17 +37,7 @@ function onWindowResize() {
 function animate() {
     requestAnimationFrame(animate);
 
-    // Smoothly update the camera's rotation
-    if (deviceOrientation) {
-        const euler = new THREE.Euler(
-            THREE.MathUtils.degToRad(deviceOrientation.beta),
-            THREE.MathUtils.degToRad(deviceOrientation.alpha),
-            -THREE.MathUtils.degToRad(deviceOrientation.gamma),
-            'YXZ' // This order is often recommended for device orientation
-        );
-        const quaternion = new THREE.Quaternion().setFromEuler(euler);
-        camera.quaternion.slerp(quaternion, 0.1); // slerp for smooth transition
-    }
+    controls.update(); // Update controls each frame
 
     renderer.render(scene, camera);
 
@@ -154,7 +121,9 @@ function captureAndMapTexture(face) {
     const destY = (1 - centroidV) * sphereCanvas.height; // Y is inverted
 
     // Simple approximation for the size of the patch to draw
-    const drawSize = 60;
+    const drawSize = 350;
+
+    console.log(`Drawing image at UV_centroid: (${centroidU.toFixed(2)}, ${centroidV.toFixed(2)}) -> Pixel: (${destX.toFixed(0)}, ${destY.toFixed(0)})`);
 
     sphereCtx.save();
     sphereCtx.translate(destX, destY);
@@ -188,20 +157,52 @@ function saveImage() {
 }
 
 // --- Device Orientation Logic ---
-let deviceOrientation = null;
-
-function handleOrientation(event) {
-    deviceOrientation = event;
-}
+// This will now be handled by THREE.DeviceOrientationControls
 
 // --- Camera Feed Logic ---
+function createSpheres(video) {
+    const aspectRatio = video.videoWidth / video.videoHeight;
+    const heightSegments = 20;
+    const widthSegments = Math.round(heightSegments * aspectRatio);
+    console.log(`Creating sphere with ${widthSegments}x${heightSegments} segments to match aspect ratio ${aspectRatio.toFixed(2)}`);
+
+    const geometry = new THREE.SphereGeometry(500, widthSegments, heightSegments);
+    geometry.scale(-1, 1, 1);
+
+    const sphereCanvas = document.createElement('canvas');
+    sphereCanvas.width = 4096;
+    sphereCanvas.height = 2048;
+    const sphereContext = sphereCanvas.getContext('2d');
+    sphereContext.fillStyle = 'rgba(40, 40, 40, 1)';
+    sphereContext.fillRect(0, 0, sphereCanvas.width, sphereCanvas.height);
+    const sphereTexture = new THREE.CanvasTexture(sphereCanvas);
+
+    const material = new THREE.MeshBasicMaterial({ map: sphereTexture });
+    sphere = new THREE.Mesh(geometry, material);
+    scene.add(sphere);
+
+    const wireframeMaterial = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.2
+    });
+    const wireframeSphere = new THREE.Mesh(geometry, wireframeMaterial);
+    scene.add(wireframeSphere);
+}
+
 async function startCamera() {
     try {
         const constraints = { video: { facingMode: 'environment' } };
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         const videoElement = document.getElementById('camera-feed');
         videoElement.srcObject = stream;
-        document.getElementById('camera-container').style.display = 'block';
+
+        videoElement.onloadedmetadata = () => {
+            createSpheres(videoElement);
+            document.getElementById('camera-container').style.display = 'block';
+        };
+
     } catch (err) {
         console.error("Error accessing the camera: ", err);
         alert("Could not access the camera. Please ensure you have granted permission.");
@@ -209,24 +210,29 @@ async function startCamera() {
 }
 
 function startExperience() {
+    // Lock screen orientation
+    if (screen.orientation && typeof screen.orientation.lock === 'function') {
+        screen.orientation.lock('landscape-primary').catch(err => {
+            console.warn("Could not lock screen orientation:", err);
+        });
+    }
+
     // First, request orientation permission
     if (typeof DeviceOrientationEvent.requestPermission === 'function') {
         DeviceOrientationEvent.requestPermission()
             .then(permissionState => {
                 if (permissionState === 'granted') {
-                    window.addEventListener('deviceorientation', handleOrientation, true);
-                    // If permission is granted, also start the camera
+                    controls.connect();
                     startCamera();
                 } else {
                     alert('Permission for device orientation not granted.');
                 }
-                // Hide overlay after user interaction
                 document.getElementById('overlay').style.display = 'none';
             })
             .catch(console.error);
     } else {
         // Handle non-iOS 13+ devices
-        window.addEventListener('deviceorientation', handleOrientation, true);
+        controls.connect();
         startCamera();
         document.getElementById('overlay').style.display = 'none';
     }
