@@ -133,8 +133,8 @@ function onCompletion() {
 
 function saveImage() {
     console.log("Stitching final image...");
-    const rows = 8;
-    const cols = 16;
+    const rows = 6;
+    const cols = 10;
 
     const firstPlaneWithTexture = targetPlanes.find(p => p.captured && p.material.map);
     if (!firstPlaneWithTexture) {
@@ -181,37 +181,39 @@ function saveImage() {
 
 // --- Camera Feed Logic ---
 function createTiledSphere() {
-    const rows = 8;
-    const cols = 16;
+    const rows = 6;
+    const cols = 10;
     const radius = 400;
 
-    const planeSize = ((2 * Math.PI * radius) / cols) * 0.95;
+    // Calculate a consistent height for planes based on row separation
+    const planeHeight = ((Math.PI * radius) / (rows - 1)) * 0.9; // 0.9 scale factor to leave gaps
 
     for (let i = 0; i < rows; i++) {
-        const phi = (i / (rows - 1)) * Math.PI; // From 0 to PI
+        const phi = (i / (rows - 1)) * Math.PI; // From 0 (top) to PI (bottom)
 
-        if (i === 0 || i === rows - 1) { // Top and bottom poles
+        if (i === 0 || i === rows - 1) { // Top and bottom polar planes
             const y = radius * Math.cos(phi);
 
-            const planeGeom = new THREE.PlaneGeometry(planeSize, planeSize);
-            const planeMat = new THREE.MeshBasicMaterial({
-                color: 0x555555,
-                side: THREE.DoubleSide,
-                wireframe: true
-            });
+            // For the polar plane, let's base its size on the adjacent row for better visual consistency
+            const adjacentPhi = (i === 0) ? (1 / (rows - 1)) * Math.PI : ((rows - 2) / (rows - 1)) * Math.PI;
+            const planeWidth = ((2 * Math.PI * radius * Math.sin(adjacentPhi)) / cols) * 0.95;
+
+            const planeGeom = new THREE.PlaneGeometry(planeWidth, planeHeight);
+            const planeMat = new THREE.MeshBasicMaterial({ color: 0x555555, side: THREE.DoubleSide, wireframe: true });
             const plane = new THREE.Mesh(planeGeom, planeMat);
             plane.position.set(0, y, 0);
-            plane.lookAt(0, 0, 0); // Point towards the center
+            plane.lookAt(0, 0, 0);
 
             plane.captured = false;
-            // For poles, we can consider it col 0 of a single-column row
             plane.gridIndex = { row: i, col: 0 };
-
             targetPlanes.push(plane);
             scene.add(plane);
 
         } else { // Middle rows
             const numColsInRow = cols;
+            // Taper the width of the planes based on their latitude
+            const planeWidth = ((2 * Math.PI * radius * Math.sin(phi)) / numColsInRow) * 0.95;
+
             for (let j = 0; j < numColsInRow; j++) {
                 const theta = (j / numColsInRow) * 2 * Math.PI;
 
@@ -219,19 +221,14 @@ function createTiledSphere() {
                 const y = radius * Math.cos(phi);
                 const z = radius * Math.sin(phi) * Math.sin(theta);
 
-                const planeGeom = new THREE.PlaneGeometry(planeSize, planeSize);
-                const planeMat = new THREE.MeshBasicMaterial({
-                    color: 0x555555,
-                    side: THREE.DoubleSide,
-                    wireframe: true
-                });
+                const planeGeom = new THREE.PlaneGeometry(planeWidth, planeHeight);
+                const planeMat = new THREE.MeshBasicMaterial({ color: 0x555555, side: THREE.DoubleSide, wireframe: true });
                 const plane = new THREE.Mesh(planeGeom, planeMat);
                 plane.position.set(x, y, z);
                 plane.lookAt(0, 0, 0);
 
                 plane.captured = false;
                 plane.gridIndex = { row: i, col: j };
-
                 targetPlanes.push(plane);
                 scene.add(plane);
             }
