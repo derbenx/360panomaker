@@ -42,7 +42,7 @@
             height: 100%;
             object-fit: cover;
         }
-        #save-container {
+        #results-container, #preview-container {
             position: absolute;
             top: 0;
             left: 0;
@@ -51,9 +51,12 @@
             display: flex;
             justify-content: center;
             align-items: center;
+            flex-direction: column;
+            gap: 20px;
             z-index: 20;
+            background-color: rgba(0,0,0,0.7);
         }
-        #saveButton {
+        .results-button {
             padding: 20px 40px;
             font-size: 24px;
             cursor: pointer;
@@ -61,6 +64,10 @@
             color: white;
             border: none;
             border-radius: 5px;
+        }
+        #preview-container {
+            z-index: 30; /* Ensure preview is on top */
+            cursor: pointer;
         }
         #version-display {
             position: absolute;
@@ -81,8 +88,13 @@
         <button id="startButton">Start</button>
         <div id="version-display">v0.2.0</div>
     </div>
-    <div id="save-container" style="display: none;">
-        <button id="saveButton">Save Photo</button>
+    <div id="results-container" style="display: none;">
+        <button id="saveButton" class="results-button">Save Image</button>
+        <button id="showButton" class="results-button">Show Preview</button>
+    </div>
+
+    <div id="preview-container" style="display: none;">
+        <!-- The preview canvas will be added here by script.js -->
     </div>
 
     <script src="libs/three.min.js"></script>

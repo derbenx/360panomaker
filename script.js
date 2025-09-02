@@ -1,6 +1,12 @@
 // --- Basic Three.js Scene Setup ---
 let scene, camera, renderer, controls;
 const targetPlanes = [];
+let hasCaptureEnded = false;
+let stitchedImageCanvas = null;
+
+// Preview scene variables
+let previewScene, previewCamera, previewRenderer, previewControls, previewSphere;
+let previewAnimationId;
 
 function init() {
     // Container
@@ -26,6 +32,13 @@ function init() {
     // Init controls
     controls = new THREE.DeviceOrientationControls(camera);
 
+    // Set up results buttons
+    const saveButton = document.getElementById('saveButton');
+    saveButton.addEventListener('click', downloadStitchedImage);
+
+    const showButton = document.getElementById('showButton');
+    showButton.addEventListener('click', showPreview);
+
     animate();
 }
 
@@ -33,6 +46,12 @@ function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
+
+    if (previewRenderer) {
+        previewCamera.aspect = window.innerWidth / window.innerHeight;
+        previewCamera.updateProjectionMatrix();
+        previewRenderer.setSize(window.innerWidth, window.innerHeight);
+    }
 }
 
 function animate() {
@@ -122,58 +141,148 @@ function captureAndMapTexture(targetPlane) {
     }
 }
 
-function onCompletion() {
-    console.log("All targets captured! Composition complete.");
-    document.getElementById('camera-container').style.display = 'none';
-    document.getElementById('save-container').style.display = 'flex';
+function endCaptureSequence() {
+    if (hasCaptureEnded) return;
+    hasCaptureEnded = true;
 
-    const saveButton = document.getElementById('saveButton');
-    saveButton.addEventListener('click', saveImage);
+    console.log("Capture sequence ended.");
+
+    // Stop camera and controls
+    const cameraContainer = document.getElementById('camera-container');
+    cameraContainer.style.display = 'none';
+    const videoElement = document.getElementById('camera-feed');
+    if (videoElement.srcObject) {
+        videoElement.srcObject.getTracks().forEach(track => track.stop());
+    }
+    controls.disconnect();
+
+    // Hide the main scene
+    const container = document.getElementById('container');
+    container.style.display = 'none';
+
+    // Remove the click listener
+    container.removeEventListener('click', endCaptureSequence);
+
+    // Stitch the image and show the results screen
+    stitchImage();
+    document.getElementById('results-container').style.display = 'flex';
 }
 
-function saveImage() {
-    console.log("Stitching final image...");
-    const rows = 6;
-    const cols = 10;
+function onCompletion() {
+    console.log("All targets captured! Composition complete.");
+    endCaptureSequence();
+}
 
-    const firstPlaneWithTexture = targetPlanes.find(p => p.captured && p.material.map);
-    if (!firstPlaneWithTexture) {
-        console.error("No captured textures to save.");
-        alert("Error: No images were captured.");
-        return;
-    }
-    const tileRes = firstPlaneWithTexture.material.map.image.width;
+function stitchImage() {
+    console.log("Stitching final image to memory...");
+    const rows = 16;
+    const cols = 16;
+    const finalWidth = 8192;
+    const finalHeight = 4096;
 
-    const finalWidth = cols * tileRes;
-    const finalHeight = rows * tileRes;
+    stitchedImageCanvas = document.createElement('canvas');
+    stitchedImageCanvas.width = finalWidth;
+    stitchedImageCanvas.height = finalHeight;
+    const finalCtx = stitchedImageCanvas.getContext('2d');
 
-    const finalCanvas = document.createElement('canvas');
-    finalCanvas.width = finalWidth;
-    finalCanvas.height = finalHeight;
-    const finalCtx = finalCanvas.getContext('2d');
+    // Fill with black initially
+    finalCtx.fillStyle = 'black';
+    finalCtx.fillRect(0, 0, finalWidth, finalHeight);
+
+    const tileWidth = finalWidth / cols;
+    const tileHeight = finalHeight / rows;
 
     for (const plane of targetPlanes) {
         if (plane.captured && plane.material.map) {
             const colIndex = plane.gridIndex.col;
             const rowIndex = plane.gridIndex.row;
-
-            if (rowIndex === 0 || rowIndex === rows - 1) {
-                // This is a polar plane, stretch the image across the row
-                const dy = rowIndex * tileRes;
-                finalCtx.drawImage(plane.material.map.image, 0, dy, finalWidth, tileRes);
-            } else {
-                // This is a regular plane in one of the middle rows
-                const dx = colIndex * tileRes;
-                const dy = rowIndex * tileRes;
-                finalCtx.drawImage(plane.material.map.image, dx, dy, tileRes, tileRes);
-            }
+            const dx = colIndex * tileWidth;
+            const dy = rowIndex * tileHeight;
+            finalCtx.drawImage(plane.material.map.image, dx, dy, tileWidth, tileHeight);
         }
     }
+    console.log("Image stitched.");
+}
 
+function downloadStitchedImage() {
+    if (!stitchedImageCanvas) {
+        console.error("No stitched image to save.");
+        return;
+    }
     const link = document.createElement('a');
-    link.download = 'panorama_tiled.png';
-    link.href = finalCanvas.toDataURL('image/png');
+    link.download = 'panorama_8k.png';
+    link.href = stitchedImageCanvas.toDataURL('image/png');
     link.click();
+}
+
+function initPreviewScene() {
+    const previewContainer = document.getElementById('preview-container');
+
+    // Scene
+    previewScene = new THREE.Scene();
+
+    // Camera
+    previewCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    previewCamera.position.z = 0.01;
+
+    // Renderer
+    previewRenderer = new THREE.WebGLRenderer();
+    previewRenderer.setSize(window.innerWidth, window.innerHeight);
+    previewContainer.appendChild(previewRenderer.domElement);
+
+    // Sphere
+    const geometry = new THREE.SphereGeometry(500, 60, 40);
+    geometry.scale(-1, 1, 1); // Invert the sphere normals to see the texture from the inside
+    const texture = new THREE.CanvasTexture(stitchedImageCanvas);
+    const material = new THREE.MeshBasicMaterial({ map: texture });
+    previewSphere = new THREE.Mesh(geometry, material);
+    previewScene.add(previewSphere);
+
+    // Controls
+    previewControls = new THREE.DeviceOrientationControls(previewCamera);
+
+    // Listener to close preview
+    previewContainer.addEventListener('click', hidePreview, false);
+}
+
+function animatePreview() {
+    previewAnimationId = requestAnimationFrame(animatePreview);
+    previewControls.update();
+    previewRenderer.render(previewScene, previewCamera);
+}
+
+function showPreview() {
+    if (!stitchedImageCanvas) {
+        alert("No image has been stitched yet.");
+        return;
+    }
+
+    const resultsContainer = document.getElementById('results-container');
+    const previewContainer = document.getElementById('preview-container');
+
+    resultsContainer.style.display = 'none';
+    previewContainer.style.display = 'block';
+
+    if (!previewScene) {
+        initPreviewScene();
+    } else {
+        // Update texture if it already exists
+        previewSphere.material.map.needsUpdate = true;
+    }
+
+    previewControls.connect();
+    animatePreview();
+}
+
+function hidePreview() {
+    const resultsContainer = document.getElementById('results-container');
+    const previewContainer = document.getElementById('preview-container');
+
+    previewContainer.style.display = 'none';
+    resultsContainer.style.display = 'flex';
+
+    previewControls.disconnect();
+    cancelAnimationFrame(previewAnimationId);
 }
 
 // --- Device Orientation Logic ---
@@ -181,57 +290,36 @@ function saveImage() {
 
 // --- Camera Feed Logic ---
 function createTiledSphere() {
-    const rows = 6;
-    const cols = 10;
+    const rows = 16;
+    const cols = 16;
     const radius = 400;
 
-    // Calculate a consistent height for planes based on row separation
-    const planeHeight = ((Math.PI * radius) / (rows - 1)) * 0.9; // 0.9 scale factor to leave gaps
+    const planeSize = ((2 * Math.PI * radius) / cols) * 0.95;
 
     for (let i = 0; i < rows; i++) {
-        const phi = (i / (rows - 1)) * Math.PI; // From 0 (top) to PI (bottom)
+        const phi = (i / (rows - 1)) * Math.PI;
+        for (let j = 0; j < cols; j++) {
+            const theta = (j / cols) * 2 * Math.PI;
 
-        if (i === 0 || i === rows - 1) { // Top and bottom polar planes
+            const x = radius * Math.sin(phi) * Math.cos(theta);
             const y = radius * Math.cos(phi);
+            const z = radius * Math.sin(phi) * Math.sin(theta);
 
-            // For the polar plane, let's base its size on the adjacent row for better visual consistency
-            const adjacentPhi = (i === 0) ? (1 / (rows - 1)) * Math.PI : ((rows - 2) / (rows - 1)) * Math.PI;
-            const planeWidth = ((2 * Math.PI * radius * Math.sin(adjacentPhi)) / cols) * 0.95;
-
-            const planeGeom = new THREE.PlaneGeometry(planeWidth, planeHeight);
-            const planeMat = new THREE.MeshBasicMaterial({ color: 0x555555, side: THREE.DoubleSide, wireframe: true });
+            const planeGeom = new THREE.PlaneGeometry(planeSize, planeSize);
+            const planeMat = new THREE.MeshBasicMaterial({
+                color: 0x555555,
+                side: THREE.DoubleSide,
+                wireframe: true
+            });
             const plane = new THREE.Mesh(planeGeom, planeMat);
-            plane.position.set(0, y, 0);
+            plane.position.set(x, y, z);
             plane.lookAt(0, 0, 0);
 
             plane.captured = false;
-            plane.gridIndex = { row: i, col: 0 };
+            plane.gridIndex = { row: i, col: j };
+
             targetPlanes.push(plane);
             scene.add(plane);
-
-        } else { // Middle rows
-            const numColsInRow = cols;
-            // Taper the width of the planes based on their latitude
-            const planeWidth = ((2 * Math.PI * radius * Math.sin(phi)) / numColsInRow) * 0.95;
-
-            for (let j = 0; j < numColsInRow; j++) {
-                const theta = (j / numColsInRow) * 2 * Math.PI;
-
-                const x = radius * Math.sin(phi) * Math.cos(theta);
-                const y = radius * Math.cos(phi);
-                const z = radius * Math.sin(phi) * Math.sin(theta);
-
-                const planeGeom = new THREE.PlaneGeometry(planeWidth, planeHeight);
-                const planeMat = new THREE.MeshBasicMaterial({ color: 0x555555, side: THREE.DoubleSide, wireframe: true });
-                const plane = new THREE.Mesh(planeGeom, planeMat);
-                plane.position.set(x, y, z);
-                plane.lookAt(0, 0, 0);
-
-                plane.captured = false;
-                plane.gridIndex = { row: i, col: j };
-                targetPlanes.push(plane);
-                scene.add(plane);
-            }
         }
     }
 }
@@ -246,6 +334,8 @@ async function startCamera() {
         videoElement.onloadedmetadata = () => {
             createTiledSphere();
             document.getElementById('camera-container').style.display = 'block';
+            // Add listener to end capture via click
+            document.getElementById('container').addEventListener('click', endCaptureSequence, false);
         };
 
     } catch (err) {
