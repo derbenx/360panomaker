@@ -1,8 +1,6 @@
-// Version: 0.2.0
-// Remember to increment on major changes.
-
 // --- Basic Three.js Scene Setup ---
-let scene, camera, renderer, sphere, controls;
+let scene, camera, renderer, controls;
+const targetPlanes = [];
 
 function init() {
     // Container
@@ -49,97 +47,77 @@ function animate() {
 
 // --- Alignment and Capture Logic ---
 const raycaster = new THREE.Raycaster();
-const capturedFaces = new Set();
 let alignmentTimer = null;
-let currentAlignedFaceIndex = null;
+let currentAlignedTarget = null;
 const ALIGNMENT_TIME_MS = 500;
 
 function checkAlignment() {
-    if (!sphere) return; // Do not run until the sphere is created
+    if (targetPlanes.length === 0) return;
 
-    raycaster.setFromCamera({ x: 0, y: 0 }, camera); // Ray from center of view
-    const intersects = raycaster.intersectObject(sphere);
+    raycaster.setFromCamera({ x: 0, y: 0 }, camera);
+    const intersects = raycaster.intersectObjects(targetPlanes);
+
+    let alignedTargetThisFrame = null;
 
     if (intersects.length > 0) {
-        const intersectedFace = intersects[0].face;
-        const faceIndex = intersectedFace.a; // Use the first vertex index as a unique ID for the face
+        const intersectedPlane = intersects[0].object;
+        if (!intersectedPlane.captured) {
+            alignedTargetThisFrame = intersectedPlane;
+        }
+    }
 
-        if (!capturedFaces.has(faceIndex)) {
-            // Aiming at a new, un-captured face
-            if (currentAlignedFaceIndex !== faceIndex) {
-                // Pointing at a new face, reset timer
-                clearTimeout(alignmentTimer);
-                currentAlignedFaceIndex = faceIndex;
-
-                alignmentTimer = setTimeout(() => {
-                    captureAndMapTexture(intersectedFace);
-                }, ALIGNMENT_TIME_MS);
+    // Handle visual feedback and timer logic
+    if (alignedTargetThisFrame) {
+        if (currentAlignedTarget !== alignedTargetThisFrame) {
+            if (currentAlignedTarget) {
+                currentAlignedTarget.material.color.set(0x555555); // Reset old target
             }
-            // Optional: Add visual feedback here for "locking on"
-        } else {
-            // Aiming at an already captured face, do nothing.
             clearTimeout(alignmentTimer);
-            currentAlignedFaceIndex = null;
+            currentAlignedTarget = alignedTargetThisFrame;
+            currentAlignedTarget.material.color.set(0x00ff00); // Highlight new target
+
+            alignmentTimer = setTimeout(() => {
+                captureAndMapTexture(currentAlignedTarget);
+            }, ALIGNMENT_TIME_MS);
         }
     } else {
-        // Not aiming at anything, reset timer
+        if (currentAlignedTarget) {
+            currentAlignedTarget.material.color.set(0x555555); // Reset old target
+        }
         clearTimeout(alignmentTimer);
-        currentAlignedFaceIndex = null;
+        currentAlignedTarget = null;
     }
 }
 
-function captureAndMapTexture(face) {
-    const faceIndex = face.a; // Use the first vertex index as a unique ID
-    if (capturedFaces.has(faceIndex)) return;
+function captureAndMapTexture(targetPlane) {
+    if (targetPlane.captured) return;
+    console.log("Capturing for plane:", targetPlane.uuid);
+    targetPlane.captured = true;
+    targetPlane.material.color.set(0xffffff); // Set to white to show texture clearly
 
-    console.log("Capturing for face index:", faceIndex);
-    capturedFaces.add(faceIndex);
-
-    // Flash the camera border red for feedback
     const cameraContainer = document.getElementById('camera-container');
     cameraContainer.style.borderColor = 'red';
     setTimeout(() => { cameraContainer.style.borderColor = 'white'; }, 200);
 
     const video = document.getElementById('camera-feed');
     const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = video.videoWidth;
-    tempCanvas.height = video.videoHeight;
+
+    const videoWidth = video.videoWidth;
+    const videoHeight = video.videoHeight;
+    const size = Math.min(videoWidth, videoHeight);
+    const sx = (videoWidth - size) / 2;
+    const sy = (videoHeight - size) / 2;
+    tempCanvas.width = size;
+    tempCanvas.height = size;
     const tempCtx = tempCanvas.getContext('2d');
-    tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+    tempCtx.drawImage(video, sx, sy, size, size, 0, 0, size, size);
 
-    // Get texture canvas and geometry UVs
-    const sphereCanvas = sphere.material.map.image;
-    const sphereCtx = sphereCanvas.getContext('2d');
-    const uvAttribute = sphere.geometry.attributes.uv;
+    targetPlane.material.map = new THREE.CanvasTexture(tempCanvas);
+    targetPlane.material.wireframe = false;
+    targetPlane.material.needsUpdate = true;
 
-    // Get UVs for the face's vertices
-    const uvA = new THREE.Vector2().fromBufferAttribute(uvAttribute, face.a);
-    const uvB = new THREE.Vector2().fromBufferAttribute(uvAttribute, face.b);
-    const uvC = new THREE.Vector2().fromBufferAttribute(uvAttribute, face.c);
-
-    // Calculate the centroid of the UV triangle
-    const centroidU = (uvA.x + uvB.x + uvC.x) / 3;
-    const centroidV = (uvA.y + uvB.y + uvC.y) / 3;
-
-    // Convert UV centroid to pixel coordinates on the canvas
-    const destX = centroidU * sphereCanvas.width;
-    const destY = (1 - centroidV) * sphereCanvas.height; // Y is inverted
-
-    // Simple approximation for the size of the patch to draw
-    const drawSize = 350;
-
-    console.log(`Drawing image at UV_centroid: (${centroidU.toFixed(2)}, ${centroidV.toFixed(2)}) -> Pixel: (${destX.toFixed(0)}, ${destY.toFixed(0)})`);
-
-    sphereCtx.save();
-    sphereCtx.translate(destX, destY);
-    sphereCtx.drawImage(tempCanvas, -drawSize / 2, -drawSize / 2, drawSize, drawSize);
-    sphereCtx.restore();
-
-    sphere.material.map.needsUpdate = true;
-
-    // Check for completion
-    const totalFaces = sphere.geometry.index.count / 3;
-    if (capturedFaces.size >= totalFaces) {
+    const allCaptured = targetPlanes.every(p => p.captured);
+    if (allCaptured) {
         onCompletion();
     }
 }
@@ -154,46 +132,81 @@ function onCompletion() {
 }
 
 function saveImage() {
-    const canvas = sphere.material.map.image;
+    console.log("Stitching final image...");
+    const rows = 16;
+    const cols = 16;
+
+    const firstPlaneWithTexture = targetPlanes.find(p => p.captured && p.material.map);
+    if (!firstPlaneWithTexture) {
+        console.error("No captured textures to save.");
+        alert("Error: No images were captured.");
+        return;
+    }
+    const tileRes = firstPlaneWithTexture.material.map.image.width;
+
+    const finalWidth = cols * tileRes;
+    const finalHeight = rows * tileRes;
+
+    const finalCanvas = document.createElement('canvas');
+    finalCanvas.width = finalWidth;
+    finalCanvas.height = finalHeight;
+    const finalCtx = finalCanvas.getContext('2d');
+
+    for (const plane of targetPlanes) {
+        if (plane.captured && plane.material.map) {
+            const colIndex = plane.gridIndex.col;
+            const rowIndex = plane.gridIndex.row;
+
+            const dx = colIndex * tileRes;
+            const dy = rowIndex * tileRes;
+
+            finalCtx.drawImage(plane.material.map.image, dx, dy, tileRes, tileRes);
+        }
+    }
+
     const link = document.createElement('a');
-    link.download = 'panorama-360.png';
-    link.href = canvas.toDataURL('image/png');
+    link.download = 'panorama_tiled.png';
+    link.href = finalCanvas.toDataURL('image/png');
     link.click();
 }
 
 // --- Device Orientation Logic ---
-// This will now be handled by THREE.DeviceOrientationControls
+// This is handled by THREE.DeviceOrientationControls
 
 // --- Camera Feed Logic ---
-function createSpheres(video) {
-    const aspectRatio = video.videoWidth / video.videoHeight;
-    const heightSegments = 20;
-    const widthSegments = Math.round(heightSegments * aspectRatio);
-    console.log(`Creating sphere with ${widthSegments}x${heightSegments} segments to match aspect ratio ${aspectRatio.toFixed(2)}`);
+function createTiledSphere() {
+    const rows = 16;
+    const cols = 16;
+    const radius = 400;
 
-    const geometry = new THREE.SphereGeometry(500, widthSegments, heightSegments);
-    geometry.scale(-1, 1, 1);
+    const planeSize = ((2 * Math.PI * radius) / cols) * 0.95;
 
-    const sphereCanvas = document.createElement('canvas');
-    sphereCanvas.width = 8192;
-    sphereCanvas.height = 4096;
-    const sphereContext = sphereCanvas.getContext('2d');
-    sphereContext.fillStyle = 'rgba(40, 40, 40, 1)';
-    sphereContext.fillRect(0, 0, sphereCanvas.width, sphereCanvas.height);
-    const sphereTexture = new THREE.CanvasTexture(sphereCanvas);
+    for (let i = 0; i < rows; i++) {
+        const phi = (i / (rows - 1)) * Math.PI;
+        for (let j = 0; j < cols; j++) {
+            const theta = (j / cols) * 2 * Math.PI;
 
-    const material = new THREE.MeshBasicMaterial({ map: sphereTexture });
-    sphere = new THREE.Mesh(geometry, material);
-    scene.add(sphere);
+            const x = radius * Math.sin(phi) * Math.cos(theta);
+            const y = radius * Math.cos(phi);
+            const z = radius * Math.sin(phi) * Math.sin(theta);
 
-    const wireframeMaterial = new THREE.MeshBasicMaterial({
-        color: 0xffffff,
-        wireframe: true,
-        transparent: true,
-        opacity: 0.2
-    });
-    const wireframeSphere = new THREE.Mesh(geometry, wireframeMaterial);
-    scene.add(wireframeSphere);
+            const planeGeom = new THREE.PlaneGeometry(planeSize, planeSize);
+            const planeMat = new THREE.MeshBasicMaterial({
+                color: 0x555555,
+                side: THREE.DoubleSide,
+                wireframe: true
+            });
+            const plane = new THREE.Mesh(planeGeom, planeMat);
+            plane.position.set(x, y, z);
+            plane.lookAt(0, 0, 0);
+
+            plane.captured = false;
+            plane.gridIndex = { row: i, col: j };
+
+            targetPlanes.push(plane);
+            scene.add(plane);
+        }
+    }
 }
 
 async function startCamera() {
@@ -204,7 +217,7 @@ async function startCamera() {
         videoElement.srcObject = stream;
 
         videoElement.onloadedmetadata = () => {
-            createSpheres(videoElement);
+            createTiledSphere();
             document.getElementById('camera-container').style.display = 'block';
         };
 
